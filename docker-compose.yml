@@ -1,0 +1,14 @@
+services:
+  natpmp-update:
+    build:
+      context: .
+    environment:
+      - WG_GATEWAY_IP=10.2.0.1
+      - WEBUI_BASE_URL=http://10.2.1.2:8080
+    networks:
+      vpn:
+        ipv4_address: 10.2.1.5
+    restart: unless-stopped
+networks:
+  vpn:
+    external: true
