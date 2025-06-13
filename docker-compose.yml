@@ -7,7 +7,7 @@ services:
       - WEBUI_BASE_URL=http://10.2.1.2:8080
     networks:
       vpn:
-        ipv4_address: 10.2.1.5
+        ipv4_address: 10.2.1.15
     restart: unless-stopped
 networks:
   vpn:
