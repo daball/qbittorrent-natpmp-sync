@@ -30,9 +30,9 @@ func main() {
 	ca := CmdArgs {
 		webuiBaseUrl: flag.String("webui-base-url", "", "qBittorrent Web UI base URL"),
         	wgGatewayIP: flag.String("wg-gateway-ip", "", "Wireguard far gateway IP address"),
-	        username: flag.String("username", "", "qBittorrent Web UI username"),
-        	password: flag.String("password", "", "qBittorrent Web UI password"),
-	        sleepTime: flag.Uint("sleep-time", 30 /*seconds*/, "Interval (integer in seconds) to run NAT-PMP") }
+	        username: flag.String("webui-username", "", "qBittorrent Web UI username"),
+        	password: flag.String("webui-password", "", "qBittorrent Web UI password"),
+	        sleepTime: flag.Uint("sleep-time", 30 /*seconds*/, "Interval (integer in seconds) to run NAT-PMP to recheck external IP/port") }
 	flag.Parse()
 
 	if *ca.webuiBaseUrl == "" {

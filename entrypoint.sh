@@ -1,7 +1,7 @@
 #!/bin/sh
 if [ -n "${WEBUI_BASE_URL}" -a -n "${WG_GATEWAY_IP}" ]; then
   if [ -n "${WEBUI_USERNAME}" -a -n "${WEBUI_PASSWORD}" ]; then
-    CMD="./update-natpmp -webui-base-url ${WEBUI_BASE_URL} -wg-gateway-ip ${WG_GATEWAY_IP} -username ${WEBUI_USERNAME} -password ${WEBUI_PASSWORD}"
+    CMD="./update-natpmp -webui-base-url ${WEBUI_BASE_URL} -wg-gateway-ip ${WG_GATEWAY_IP} -webui-username ${WEBUI_USERNAME} -webui-password ${WEBUI_PASSWORD}"
   else
     CMD="./update-natpmp -webui-base-url ${WEBUI_BASE_URL} -wg-gateway-ip ${WG_GATEWAY_IP}"
   fi
