@@ -1,134 +1,154 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
         "net/url"
 	"os/exec"
-	"time"
+	"os/signal"
 	"regexp"
-	"errors"
-        "strings"
 	"strconv"
+	"strings"
+	"syscall"
+	"time"
 )
 
+type CmdArgs struct {
+	webuiBaseUrl *string
+	wgGatewayIP *string
+	username *string
+	password *string
+	sleepTime *uint
+}
+
 func main() {
-	webuiBaseUrl := flag.String("webui-base-url", "", "qBittorrent Web UI base URL")
-	wgGatewayIP := flag.String("wg-gateway-ip", "", "Wireguard far gateway IP address")
-	username := flag.String("username", "", "qBittorrent Web UI username")
-	password := flag.String("password", "", "qBittorrent Web UI password")
-	sleeping := "Sleeping for 30 seconds."
+	ca := CmdArgs {
+		webuiBaseUrl: flag.String("webui-base-url", "", "qBittorrent Web UI base URL"),
+        	wgGatewayIP: flag.String("wg-gateway-ip", "", "Wireguard far gateway IP address"),
+	        username: flag.String("username", "", "qBittorrent Web UI username"),
+        	password: flag.String("password", "", "qBittorrent Web UI password"),
+	        sleepTime: flag.Uint("sleep-time", 30 /*seconds*/, "Interval (integer in seconds) to run NAT-PMP") }
 	flag.Parse()
 
-	if *webuiBaseUrl == "" {
+	if *ca.webuiBaseUrl == "" {
 		log.Fatal("Web UI base URL is required")
 	}
-	if *wgGatewayIP == "" {
+	if *ca.wgGatewayIP == "" {
 		log.Fatal("Wireguard gateway IP address is required")
 	}
 
+        ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+        defer stop()
+
+        fmt.Println("Waiting for signal...")
+	mainLoop(ctx, ca)
+        fmt.Println("Shutdown complete")
+}
+
+func mainLoop(ctx context.Context, ca CmdArgs) {
+        sleepingText := fmt.Sprintf("Sleeping for %d seconds.", *ca.sleepTime)
+
 	for {
-		currentAnnounceIP, currentAnnouncePort, currentListenPort, err := getCurrentPreferences(*webuiBaseUrl, *username, *password)
-		if err != nil {
-			log.Printf("Error getting current preferences: %s", err)
-			log.Print(sleeping);
-			time.Sleep(30 * time.Second)
-			continue
+		select {
+		case <-ctx.Done():
+			fmt.Println("Received signal, exiting...")
+			return
+		default:
+			doMainLoopWork(ca)
+	                log.Print(sleepingText);
+        	        time.Sleep(time.Duration(*ca.sleepTime) * time.Second)
 		}
-
-		log.Printf("Running natpmpc -g %s -a 1 %d TCP 60", *wgGatewayIP, currentListenPort);
-		tcpOutput, err := exec.Command("natpmpc", "-g", *wgGatewayIP, "-a", "1", fmt.Sprintf("%d", currentListenPort), "TCP", "60").CombinedOutput()
-		if err != nil {
-			log.Printf("Error running natpmpc for TCP: %s", tcpOutput)
-                        log.Print(sleeping);
-			time.Sleep(30 * time.Second)
-			continue
-		}
-
-                log.Printf("Running natpmpc -g %s -a 1 %d UDP 60", *wgGatewayIP, currentListenPort);
-		udpOutput, err := exec.Command("natpmpc", "-g", *wgGatewayIP, "-a", "1", fmt.Sprintf("%d", currentListenPort), "UDP", "60").CombinedOutput()
-		if err != nil {
-			log.Printf("Error running natpmpc for UDP: %s", udpOutput)
-                        log.Print(sleeping);
-			time.Sleep(30 * time.Second)
-			continue
-		}
-
-		publicPortTcp, err := parsePublicPort(tcpOutput)
-		if err != nil {
-			log.Printf("Error parsing public port from TCP output: %s", err)
-                        log.Print(sleeping);
-			time.Sleep(30 * time.Second)
-			continue
-		}
-                publicIPTcp, err := parsePublicIP(tcpOutput)
-                if err != nil {
-                        log.Printf("Error parsing public IP address from TCP output: %s", err)
-                        log.Print(sleeping);
-                        time.Sleep(30 * time.Second)
-                        continue
-                }
-
-		publicPortUdp, err := parsePublicPort(udpOutput)
-		if err != nil {
-			log.Printf("Error parsing public port from UDP output: %s", err)
-                        log.Print(sleeping);
-			time.Sleep(30 * time.Second)
-			continue
-		}
-
-		publicPort := publicPortTcp
-		publicIP := publicIPTcp
-
-		if publicPortUdp != publicPortTcp {
-			log.Printf("Warning: public ports for TCP and UDP do not match: TCP=%d, UDP=%d", publicPortTcp, publicPortUdp)
-			publicPort = publicPortUdp // Use the last returned public port
-		}
-
-		if publicPort != currentAnnouncePort {
-			log.Printf("Updating announce port from %d to %d", currentAnnouncePort, publicPort)
-			err = updateAnnouncePort(*webuiBaseUrl, *username, *password, publicPort)
-			if err != nil {
-				log.Printf("Error updating announce port: %s", err)
-			} else {
-			        _, newAnnouncePort, _, err := getCurrentPreferences(*webuiBaseUrl, *username, *password)
-			        if err != nil {
-			            log.Printf("Error getting current preferences after update: %s", err)
-			        } else if newAnnouncePort == publicPort {
-			            log.Printf("Announce port updated successfully to %d", publicPort)
-			        } else {
-			            log.Printf("Announce port update failed: expected %d, got %d", publicPort, newAnnouncePort)
-			        }
-			}
-		} else {
-			log.Print("There was no change needed to the announce_port. Leaving announce_port the same.")
-		}
-
-                if publicIP != currentAnnounceIP {
-                        log.Printf("Updating announce IP from %s to %s", currentAnnounceIP, publicIP)
-                        err = updateAnnounceIP(*webuiBaseUrl, *username, *password, publicIP)
-                        if err != nil {
-                                log.Printf("Error updating announce IP: %s", err)
-                        } else {
-                                newAnnounceIP, _, _, err := getCurrentPreferences(*webuiBaseUrl, *username, *password)
-                                if err != nil {
-                                    log.Printf("Error getting current preferences after update: %s", err)
-                                } else if newAnnounceIP == publicIP {
-                                    log.Printf("Announce IP updated successfully to %s", publicIP)
-                                } else {
-                                    log.Printf("Announce IP update failed: expected %s, got %s", publicIP, newAnnounceIP)
-                                }
-                        }
-                } else {
-                        log.Print("There was no change needed to the announce_ip. Leaving announce_ip the same.")
-                }
-
-                log.Print(sleeping);
-		time.Sleep(30 * time.Second)
 	}
+}
+
+func doMainLoopWork(ca CmdArgs) {
+	currentAnnounceIP, currentAnnouncePort, currentListenPort, err := getCurrentPreferences(*ca.webuiBaseUrl, *ca.username, *ca.password)
+	if err != nil {
+		log.Printf("Error getting current preferences: %s", err)
+		return
+	}
+
+	log.Printf("Running natpmpc -g %s -a 1 %d TCP 60", *ca.wgGatewayIP, currentListenPort);
+	tcpOutput, err := exec.Command("natpmpc", "-g", *ca.wgGatewayIP, "-a", "1", fmt.Sprintf("%d", currentListenPort), "TCP", "60").CombinedOutput()
+	if err != nil {
+		log.Printf("Error running natpmpc for TCP: %s", tcpOutput)
+		return
+	}
+
+        log.Printf("Running natpmpc -g %s -a 1 %d UDP 60", *ca.wgGatewayIP, currentListenPort);
+	udpOutput, err := exec.Command("natpmpc", "-g", *ca.wgGatewayIP, "-a", "1", fmt.Sprintf("%d", currentListenPort), "UDP", "60").CombinedOutput()
+	if err != nil {
+		log.Printf("Error running natpmpc for UDP: %s", udpOutput)
+		return
+	}
+
+	publicPortTcp, err := parsePublicPort(tcpOutput)
+	if err != nil {
+		log.Printf("Error parsing public port from TCP output: %s", err)
+		return
+	}
+        publicIPTcp, err := parsePublicIP(tcpOutput)
+        if err != nil {
+                log.Printf("Error parsing public IP address from TCP output: %s", err)
+		return
+        }
+
+	publicPortUdp, err := parsePublicPort(udpOutput)
+	if err != nil {
+		log.Printf("Error parsing public port from UDP output: %s", err)
+		return
+	}
+
+	publicPort := publicPortTcp
+	publicIP := publicIPTcp
+
+	if publicPortUdp != publicPortTcp {
+		log.Printf("Warning: public ports for TCP and UDP do not match: TCP=%d, UDP=%d", publicPortTcp, publicPortUdp)
+		publicPort = publicPortUdp // Use the last returned public port
+	}
+
+	if publicPort != currentAnnouncePort {
+		log.Printf("Updating announce port from %d to %d", currentAnnouncePort, publicPort)
+		err = updateAnnouncePort(*ca.webuiBaseUrl, *ca.username, *ca.password, publicPort)
+		if err != nil {
+			log.Printf("Error updating announce port: %s", err)
+		} else {
+		        _, newAnnouncePort, _, err := getCurrentPreferences(*ca.webuiBaseUrl, *ca.username, *ca.password)
+		        if err != nil {
+		            log.Printf("Error getting current preferences after update: %s", err)
+		        } else if newAnnouncePort == publicPort {
+		            log.Printf("Announce port updated successfully to %d", publicPort)
+		        } else {
+		            log.Printf("Announce port update failed: expected %d, got %d", publicPort, newAnnouncePort)
+		        }
+		}
+	} else {
+		log.Print("There was no change needed to the announce_port. Leaving announce_port the same.")
+	}
+
+        if publicIP != currentAnnounceIP {
+        	log.Printf("Updating announce IP from %s to %s", currentAnnounceIP, publicIP)
+                err = updateAnnounceIP(*ca.webuiBaseUrl, *ca.username, *ca.password, publicIP)
+                if err != nil {
+                	log.Printf("Error updating announce IP: %s", err)
+                } else {
+                        newAnnounceIP, _, _, err := getCurrentPreferences(*ca.webuiBaseUrl, *ca.username, *ca.password)
+                        if err != nil {
+                	        log.Printf("Error getting current preferences after update: %s", err)
+                        } else if newAnnounceIP == publicIP {
+                        	log.Printf("Announce IP updated successfully to %s", publicIP)
+                	} else {
+                                log.Printf("Announce IP update failed: expected %s, got %s", publicIP, newAnnounceIP)
+                        }
+                }
+        } else {
+        	log.Print("There was no change needed to the announce_ip. Leaving announce_ip the same.")
+        }
 }
 
 //parses natpmpc output for "Public IP address : (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
